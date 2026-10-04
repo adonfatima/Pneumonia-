@@ -1,0 +1,254 @@
+# Attention-Guided Dual-Branch Framework for Small Lesion Sensitive Pneumonia Detection from Chest X-rays
+
+> **ICCA 2026** (4th International Conference on Computing Advancements), Dhaka, Bangladesh · Paper ID 356
+>
+> A lightweight dual-branch CNN (**EfficientNet-B0 + CBAM** and **ShuffleNetV2 + ECA**) with a lesion-aware multi-scale refinement module (**LAMR**) and a transformer-style cross-branch fusion module (**CBAF**), explained with **Grad-CAM**.
+
+**Headline result:** 97.72% accuracy · 99.05% precision · 97.82% recall · 98.43% F1 · 99.75% AUC-ROC, with only **9.74M parameters** (879-image test set).
+
+---
+
+## Table of Contents
+
+1. [Problem Statement](#problem-statement)
+2. [Pneumonia](#pneumonia)
+3. [Research Gap](#research-gap)
+4. [Novelty and Contributions](#novelty-and-contributions)
+5. [Architecture Overview](#architecture-overview)
+6. [Dataset Description](#dataset-description)
+7. [Training Setup](#training-setup)
+8. [Results](#results)
+9. [Ablation Study](#ablation-study)
+10. [Grad-CAM Interpretability](#grad-cam-interpretability)
+11. [Benchmark Comparison](#benchmark-comparison)
+12. [Limitations](#limitations)
+13. [Future Work](#future-work)
+14. [How to Run](#how-to-run)
+15. [Authors](#authors)
+16. [Citation](#citation)
+
+---
+
+## Problem Statement
+
+**Build a lightweight and explainable binary classifier that detects pneumonia from chest X-rays and stays sensitive to small lesions such as tiny nodules and faint pulmonary opacities.**
+
+Chest X-ray is the standard first-line tool for diagnosing pneumonia, but reading it is time-consuming and can still produce false positives and false negatives. Many deep-learning models either need heavy compute (for example VGG16 and DenseNet121) or lose fine-grained lesion detail when they pool features globally. A missed small lesion can mean a missed early-stage case.
+
+**Research question:** *Can a lightweight dual-branch network detect small pneumonia lesions accurately and explainably?*
+
+## Pneumonia
+
+> Pneumonia is an infection that inflames the air sacs in one or both lungs. The air sacs may fill with fluid or pus, causing cough, fever, chills and difficulty breathing. Bacteria, viruses and fungi can all cause it. It remains a leading cause of illness and death worldwide, particularly in infants and the elderly, and chest X-ray is the most widely used diagnostic method.
+
+## Research Gap
+
+Existing pneumonia detection work leaves four problems open:
+
+| # | Gap in existing work | What we do about it |
+|---|----------------------|---------------------|
+| 1 | Models are either **deep and accurate but heavy**, or **light but weak at combining global and local information**. | Pair a global branch (EfficientNet-B0) with a local branch (ShuffleNetV2) in one lightweight network. |
+| 2 | **Small nodules and faint opacities** are lost after global average pooling. | LAMR works on the 2-D feature maps *before* pooling to keep multi-scale lesion detail. |
+| 3 | Hybrid models fuse branches with **plain concatenation or element-wise operations**, so the two feature extractors never interact. | CBAF lets the branches attend to each other and weights global vs local evidence per image. |
+| 4 | Attention is often applied in **only one branch**, and predictions are a **black box**. | Branch-specific attention (CBAM and ECA) plus Grad-CAM visual explanations. |
+
+Multi-scale and attention ideas already exist for pulmonary nodule *detection and segmentation*, but are rarely built into an efficient pneumonia *classification* framework. That is the space this work targets.
+
+## Novelty and Contributions
+
+1. **Hybrid dual-branch architecture** that combines EfficientNet-B0 (global semantics) and ShuffleNetV2 (local high-frequency detail) for pneumonia classification.
+2. **Branch-specific attention:** CBAM on the global branch and ECA on the local branch.
+3. **LAMR (Lesion-Aware Multi-scale Refinement):** a module on spatial feature maps with parallel 1x1, 3x3, 5x5 and global-context paths, an SE-style lesion gate and a residual shortcut.
+4. **CBAF (Cross-Branch Attention Fusion):** replaces simple concatenation with 4-head self-attention across the two branch features, so each image decides how much to trust global vs local evidence.
+5. **Interpretability:** Grad-CAM lesion maps, compared against Grad-CAM++.
+6. **Efficiency:** 9.74M parameters and 38.96 MB, far lighter than VGG16.
+
+## Architecture Overview
+
+**Hybrid Pneumonia Detection Framework (HPDF)**
+
+```mermaid
+flowchart LR
+    A["Input chest X-ray<br/>224 x 224, ImageNet norm."] --> B1["Branch 1 (global)<br/>EfficientNet-B0"]
+    A --> B2["Branch 2 (local)<br/>ShuffleNetV2 x1.0"]
+    B1 --> C1["CBAM"]
+    B2 --> C2["ECA"]
+    C1 --> D1["LAMR"]
+    C2 --> D2["LAMR"]
+    D1 --> E1["GAP + Linear 1280 to 256<br/>BN + GELU"]
+    D2 --> E2["GAP + Linear 1024 to 256<br/>BN + GELU"]
+    E1 --> F["CBAF<br/>Cross-Branch Attention Fusion"]
+    E2 --> F
+    F --> G["Classifier head<br/>NORMAL / PNEUMONIA"]
+    G --> H["Grad-CAM explanation"]
+```
+
+| Component | Role | Details |
+|-----------|------|---------|
+| **Branch 1: EfficientNet-B0 + CBAM** | Global semantic and spatial features | ImageNet-pretrained, output 1280 x 7 x 7, channel then spatial attention |
+| **Branch 2: ShuffleNetV2 + ECA** | Lightweight, fine-grained local features | ImageNet-pretrained, output 1024 x 7 x 7, 1-D conv channel attention |
+| **LAMR** | Multi-scale lesion refinement | 4 parallel paths (1x1, 3x3, 5x5, global), concat, 1x1 projection, SE-style lesion gate, residual |
+| **CBAF** | Attention-gated fusion of the two branches | 2 tokens of 256-d, 4-head self-attention, residual + LayerNorm, FFN 256 to 512 to 256, fused 512-d vector |
+| **Grad-CAM** | Clinical interpretability | Heatmaps and bounding boxes over candidate lesion regions |
+
+### LAMR in one line
+`Y = GateProj([B1(X) ⊕ B3(X) ⊕ B5(X) ⊕ Bglobal(X)]) + Shortcut(X)`
+
+### CBAF in one line
+`X' = LayerNorm(X + MHSA(X))`, `Z = LayerNorm(X' + FFN(X'))`, then flatten to a 512-d fused feature.
+
+## Dataset Description
+
+Public **Chest X-Ray Images (Pneumonia)** dataset (Kermany / Kaggle, Paul Mooney).
+
+| Item | Value |
+|------|-------|
+| Images | 5,856 pediatric chest radiographs |
+| Classes | NORMAL (1,583) and PNEUMONIA (4,273) |
+| Split used here | 70% train / 15% validation / 15% test (stratified random re-partition) |
+| Test set | 879 images (238 NORMAL, 641 PNEUMONIA) |
+| Input size | 224 x 224, ImageNet mean/std normalization |
+
+The dataset is strongly imbalanced (pneumonia is about 2.7x more common than normal), so a `WeightedRandomSampler` is used for balanced mini-batches without duplicating images.
+
+## Training Setup
+
+**Augmentation (train only):** random resized crop (scale 0.8 to 1.0), horizontal flip, rotation (±15°), affine translation (±5%), scaling (0.92 to 1.08), brightness/contrast jitter (±0.2), grayscale (p = 0.05), CutOut (p = 0.15, 2 to 8% of the image area). Inference uses only resize and normalization.
+
+**Regularization and tricks:** label smoothing, Mixup, EMA, dropout, differential learning rates, gradient clipping, AMP, and test-time augmentation (horizontal flip) for the reported test numbers.
+
+| Hyperparameter | Value | Hyperparameter | Value |
+|---|---|---|---|
+| Optimizer | AdamW | Base learning rate | 3e-4 |
+| Backbone LR multiplier | 0.05 | Weight decay | 1e-4 |
+| Batch size | 32 | Epochs | 30 |
+| Warmup epochs | 3 (then cosine decay) | Dropout | 0.15 |
+| Label smoothing | 0.05 | Mixup alpha | 0.1 |
+| EMA decay | 0.9998 | Projection dim | 256 |
+| Attention heads | 4 | Gradient clip | 1.0 |
+
+## Results
+
+Test set of 879 images (with horizontal-flip TTA):
+
+| Model | Accuracy | Precision | Recall | F1-score | AUC-ROC |
+|-------|---------:|----------:|-------:|---------:|--------:|
+| **HPDF (ours)** | **97.72%** | 99.05% | 97.82% | 98.43% | **99.75%** |
+
+**Per-class report**
+
+| Class | Precision | Recall | F1 | Support |
+|-------|----------:|-------:|---:|--------:|
+| NORMAL | 0.94 | 0.97 | 0.96 | 238 |
+| PNEUMONIA | 0.99 | 0.98 | 0.98 | 641 |
+
+**Confusion matrix**
+
+|  | Pred NORMAL | Pred PNEUMONIA |
+|---|---:|---:|
+| **True NORMAL** | 232 (TN) | 6 (FP) |
+| **True PNEUMONIA** | 14 (FN) | 627 (TP) |
+
+Only 20 errors in 879 test images. Training was stable over 30 epochs and validation accuracy stayed above 96%.
+
+**Model cost:** 9,738,889 parameters (all trainable) · 38.96 MB weights · about 699.51 million multiply-adds.
+
+## Ablation Study
+
+| Configuration | Accuracy (%) | Precision (%) | Recall (%) | F1 (%) | AUC-ROC (%) |
+|---|---:|---:|---:|---:|---:|
+| Branch 1 only: ShuffleNetV2 + ECA | 97.27 | 98.58 | 97.66 | 98.12 | 99.56 |
+| Branch 2 only: EfficientNet-B0 + CBAM | 95.68 | 99.35 | 94.70 | 96.96 | 99.64 |
+| Hybrid: CBAF only (no LAMR) | 96.81 | 99.52 | 96.10 | 97.78 | 99.66 |
+| Hybrid: LAMR only (no CBAF) | 97.38 | 98.89 | 97.50 | 98.19 | 99.71 |
+| Full hybrid, without ECA | 97.38 | 97.98 | 98.44 | 98.21 | 99.69 |
+| Full hybrid, without CBAM | 97.38 | 98.43 | 97.97 | 98.20 | 99.70 |
+| **Full hybrid: CBAF + LAMR (proposed)** | **97.72** | 99.05 | 97.82 | **98.43** | **99.75** |
+
+**Takeaways**
+- The full model is best on accuracy, F1 and AUC-ROC.
+- Removing CBAF, LAMR, ECA or CBAM lowers AUC-ROC (99.66 to 99.71%).
+- The gains are small and come from a single run, so treat them as indicative rather than conclusive.
+- ShuffleNetV2 + ECA alone is already strong (97.27%).
+
+## Grad-CAM Interpretability
+
+We compare **Grad-CAM** and **Grad-CAM++** on the proposed model.
+
+- Grad-CAM highlights up to **8 separate candidate small-lesion regions**.
+- Grad-CAM++ tends to smooth these into **2 to 3 dominant areas** and can miss subtle cues.
+
+These maps are a qualitative aid only. They have **not** yet been checked against expert-annotated lesion boundaries, so they should not be read as clinically validated localization.
+
+## Benchmark Comparison
+
+| Ref. | Model | Accuracy (%) | Params |
+|------|-------|-------------:|-------:|
+| [2] | DenseNet121 + CBAM + Grad-CAM | 84.29 | about 8M |
+| [12] | VGG16 | 90.00 | about 138M |
+| **Ours** | **ShuffleNetV2 + EfficientNet-B0 + CBAF + LAMR** | **97.72** | **9.74M** |
+
+**Caution:** the baseline numbers are figures reported in other papers. They may use different splits, datasets and protocols, so this is an indicative comparison and not a controlled head-to-head.
+
+## Limitations
+
+- **Single pediatric dataset** used for the main results.
+- **Patient-level splitting is not confirmed**, so some leakage between train and test is possible.
+- **Small-lesion sensitivity is not measured separately**; the model is *designed* for small lesions but evaluated with overall metrics.
+- Grad-CAM maps are **not validated against expert annotations**.
+- Benchmark baselines are **not re-run under the same protocol**.
+- Ablation results come from a **single run** (no seed variance reported).
+
+## Future Work
+
+- Patient-level splits and **external, multi-center datasets**.
+- Evaluation designed specifically for **small-lesion sensitivity**.
+- Validation of lesion maps with **expert-annotated boundaries**.
+- Lower computational complexity and **multi-class thoracic disease** classification.
+
+## How to Run
+
+```bash
+# 1. Clone
+git clone https://github.com/adonfatima/Pneumonia-.git
+cd Pneumonia-
+
+# 2. Install requirements
+pip install torch torchvision timm numpy pandas scikit-learn matplotlib opencv-python grad-cam jupyter
+
+# 3. Download the dataset (Kaggle: paultimothymooney/chest-xray-pneumonia)
+#    and update the dataset path inside the notebook
+
+# 4. Open the notebooks
+jupyter notebook
+```
+
+**Notebooks in this repository**
+
+| File | Purpose |
+|------|---------|
+| `Attention_Guided_Dual_Branch_Framework.ipynb` | Main notebook: data preparation, HPDF model (EfficientNet-B0 + CBAM, ShuffleNetV2 + ECA, LAMR, CBAF), training, evaluation, ablation and Grad-CAM |
+| `External_data_validation_curated_chest_xray.ipynb` | Evaluation on a curated external chest X-ray dataset |
+
+## Authors
+
+Jahin Sultana, Fatima Adon, Zahid Hasan Loshan, Syeda Asrafa Islam, Md. Abdullah-Al-Jubair, M. F. Mridha
+
+American International University-Bangladesh (AIUB), Dhaka, Bangladesh
+
+## Citation
+
+```bibtex
+@inproceedings{sultana2026hpdf,
+  title     = {Attention-Guided Dual-Branch Framework for Small Lesion Sensitive Pneumonia Detection from Chest X-rays},
+  author    = {Sultana, Jahin and Adon, Fatima and Loshan, Zahid Hasan and Islam, Syeda Asrafa and Abdullah-Al-Jubair, Md. and Mridha, M. F.},
+  booktitle = {Proceedings of the 4th International Conference on Computing Advancements (ICCA 2026)},
+  year      = {2026},
+  address   = {Dhaka, Bangladesh},
+  publisher = {ACM}
+}
+```
+
+## Acknowledgment
+
+This work was carried out at AIUB, and the authors thank the AIUB authority for their support.
