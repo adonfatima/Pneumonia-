@@ -228,7 +228,7 @@ jupyter notebook
 | File | Purpose |
 |------|---------|
 | `Attention_Guided_Dual_Branch_Framework.ipynb` | Main notebook: data preparation, HPDF model (EfficientNet-B0 + CBAM, ShuffleNetV2 + ECA, LAMR, CBAF), training, evaluation, ablation and Grad-CAM |
-| `External_data_validation_curated_chest_xray.ipynb` | Evaluation on a curated external chest X-ray dataset |
+
 
 ## Authors
 
